@@ -1,0 +1,171 @@
+---
+title: "Peer Assessment"
+author: "Dennis Hunziker"
+date: "23 January 2016"
+output: html_document
+references:
+- id: velloso2013
+  title: Qualitative Activity Recognition of Weight Lifting Exercises
+  author:
+  - family: Velloso
+    given: E.
+  - family: Bulling
+  - given: A.
+  - family: Gellersen
+  - given: H.
+  - family: Ugulino
+  - given: W.
+  - family: Fuks
+  - given: H.
+  container-title: Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13)
+  URL: 'http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201'
+  publisher: 'Stuttgart, Germany: ACM SIGCHI'
+  issued:
+    year: 2013
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+```{r, echo = FALSE}
+library(plyr); library(dplyr); library(caret); library(doParallel)
+set.seed(1337)
+```
+
+## Summary
+
+In this report I've applied various machine learning algorithms in order to predict the quality of unilateral bicep curls executed by 6 participants. The way the measurements were taken makes it easy to just infer the quality from other measures taken for a given participant. I used that knowledge to cross check the final outcome of the machine learning applied and the result is that, as expected, both ways lead to the exact same outcome.
+
+The algorithms that proofed most effective were K-Nearest Neighbours and Random Forest, both executed using a 10-fold cross validation. In addition, I've learned that applying PCA in this case isn't helpful and will lead to slightly less accurate results.
+
+## Objective
+
+The aim of this analysis is the development of a model in order to quantify how well a group of 6 participants has executed a certain exercise, in this case, unilateral bicep curls. The paper [see @velloso2013] on which the dataset we use is based on already contains information regarding feature extraction and selection. However, instead of trying and reproduce the exact same analysis provided in the paper, we'll try and come up with our own conclusions based on the knowledge gained during this course.
+
+## Loading the Data
+
+First we'll load the raw datasets from disk. These datasets have been provided as part of the assessment and therefore are stored alongside the code in order to keep this analysis re-runnable at any point later on. We might want to validate different models before running a final model against the test data. For that purpose we split up the original training into 2 parts.
+
+```{r}
+# Storing the data on GitHub in order to keep this reproducable
+trainingRaw <- read.csv("data/pml-training.csv", na.strings = c(NA, ""))
+inTrain = createDataPartition(trainingRaw$classe, p = 3/5)[[1]]
+trainingRaw = trainingRaw[inTrain,]
+validation = trainingRaw[-inTrain,]
+testing <- read.csv("data/pml-testing.csv", na.strings = c(NA, ""))
+```
+
+## Exploratory Analysis
+
+To get a better picture of the data we then have a look at various different summaries and statistics. At this stage, most of them will be very verbose so they've been omitted from this report.
+
+```{r}
+dim <- data.frame(rbind(dim(trainingRaw), dim(validation), dim(testing)), row.names = c("Training", "Validation", "Testing"))
+names(dim) <- c("Rows", "Columns"); dim
+outcome.per.window <- trainingRaw %>% count(user_name, num_window, classe)
+nrow(outcome.per.window) # The total amount of unique outcomes per window
+length(unique(trainingRaw$num_window)) # Matches the amount of unique windows overall
+```
+
+Looking at the training data frame we can see that it is sparsely populated. It contains aggregations like mean, average, min, max etc. which are only populated for rows where 'new_window' is equal to 'yes'. I've also shown that the outcome for each window as a whole, is always the same. This means that we could use the summary rows to predict the outcome, given a reasonable amount of steps for a new window.
+
+## Tidying the Data
+
+However, by looking at the testing data, we can see that we're meant to predict the outcome for a series of steps, all part of different windows. I therefore conclude that these aggregations won't add anything to our prediction capabilities and in order to simplify the model and improve the performance I'm going to drop them.
+
+```{r}
+training.clean <- trainingRaw %>% filter(new_window == "no") %>% dplyr::select(-(1:7))
+training <- Filter(function(x) !all(is.na(x)), training.clean) # Credits to @mnel from SO
+```
+
+I've also dropped the first 7 columns because they should not be part of any of the models. More details, especially about num_window, can be found in the appendix.
+
+## Fitting Multiple Models
+
+Because we're trying to predict a factor outcome, linear regression is out of question. Instead, we'll have to try and find a classification algorithm with a decent accuracy. Before fitting the different models, we enable parallel processing and change the re-sampling from the default bootstrapping to a 10-fold cross validation. This will ensure that we automatically select the best fitting model without having to go into the details of splitting up the data and applying cross validation ourselves. 
+
+```{r, cache = TRUE}
+# Start running things in parallel
+cl <- makeCluster(detectCores()); registerDoParallel(cl)
+train.control <- trainControl(method = "cv", number = 10)
+
+train.lda <- train(classe ~ ., method = "lda", trControl = train.control, data = training)
+train.gbm <- train(classe ~ ., method = "gbm", trControl = train.control, data = training, verbose = FALSE)
+train.knn <- train(classe ~ ., method = "knn", trControl = train.control, data = training)
+train.rf <- train(classe ~ ., method = "rf", trControl = train.control, data = training)
+
+# Return to sequential mode
+stopCluster(cl); registerDoSEQ()
+```
+
+## Model Accuracy
+
+We can now gather the accuracies for each model and decide which ones to combine and apply to testing data.
+
+```{r}
+data.frame(lda = train.lda$results$Accuracy,
+           gbm = train.gbm$results$Accuracy[1],
+           knn = train.knn$results$Accuracy[1],
+           rf = train.rf$results$Accuracy[1],
+           row.names = "Accuracy")
+
+# Select K-Nearest Neighbours and Random Forest
+models <- list(train.knn, train.rf)
+```
+
+## Out of Sample Error
+
+By definition, the out of sample error should always be slightly higher than the in sample error (this might not be the case in this assessment because we're aiming to get a 100% on the testing data).
+
+```{r}
+pred.validation <- sapply(models, predict, newdata = validation)
+pred.validation.data <- data.frame(unlist(pred.validation), classe = validation$classe)
+train.combo <- train(classe ~ ., method = "rf", data = pred.validation.data)
+pred.combo <- predict(train.combo, pred.validation.data)
+postResample(pred.combo, validation$classe)
+```
+
+As we already expected, we actually have a success rate of 100%.
+
+## Prediction
+
+Let's predict the outcome for the true testing data set now.
+
+```{r}
+pred.testing <- sapply(models, predict, newdata = testing)
+pred.testing.data <- data.frame(unlist(pred.testing))
+result <- predict(train.combo, pred.testing.data)
+```
+
+And the final result is: `r result`.
+
+## Appendix
+
+### Session Information
+
+```{r}
+sessionInfo()
+```
+
+### Cross Validation Accuracies
+
+For the sake of completeness, all the cross validation accuracies for all the models that are part of our final model are listed below.
+
+```{r}
+data.frame(train.knn$resample$Accuracy)
+data.frame(train.rf$resample$Accuracy)
+```
+
+### Result Verification
+
+We can validate our final result by just using the num_window to look up the corresponding outcome for each of the test records. This column has been removed from the training data initially in order to apply machine learning algorithms to find the outcome.
+
+```{r}
+x <- function(num) {
+    unique(trainingRaw[trainingRaw$num_window == num,]$classe)
+}
+sapply(as.list(testingRaw$num_window), x)
+```
+
+## References
