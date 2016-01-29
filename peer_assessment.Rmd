@@ -2,7 +2,9 @@
 title: "Peer Assessment"
 author: "Dennis Hunziker"
 date: "23 January 2016"
-output: html_document
+output:
+    html_document:
+        theme: readable
 references:
 - id: velloso2013
   title: Qualitative Activity Recognition of Weight Lifting Exercises
@@ -165,7 +167,7 @@ We can validate our final result by just using the num_window to look up the cor
 x <- function(num) {
     unique(trainingRaw[trainingRaw$num_window == num,]$classe)
 }
-sapply(as.list(testingRaw$num_window), x)
+sapply(as.list(testing$num_window), x)
 ```
 
 ## References
